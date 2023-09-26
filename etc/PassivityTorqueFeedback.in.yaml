@@ -1,0 +1,10 @@
+---
+integration_type: Simple
+velocity_gain_type: MassMatrix
+lambda: 1.0
+phi_slow: 0.1
+phi_fast: 100.0
+fast_filter_weight: 0.9
+integral_bound:
+  low: -20.0
+  up: 20.0

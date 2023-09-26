@@ -1,8 +1,8 @@
 {
-  "name": "mc-rtc-new-plugin",
+  "name": "mc-rtc-passivity-torque-feedback",
   "version-string": "1.0.0",
   "homepage": "",
-  "description": "NewPlugin for mc_rtc",
+  "description": "PassivityTorqueFeedback for mc_rtc",
   "dependencies": [
     "mc-rtc"
   ]

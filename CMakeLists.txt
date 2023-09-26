@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.1)
 
-project(NewPlugin LANGUAGES CXX VERSION 1.0.0)
+project(PassivityTorqueFeedback LANGUAGES CXX VERSION 1.0.0)
 
 include(CTest)
 enable_testing()
@@ -11,19 +11,19 @@ if(NOT TARGET mc_rtc::mc_control)
 endif()
 
 # Configure and install the plugin configuration
-configure_file(etc/NewPlugin.in.yaml "${CMAKE_CURRENT_BINARY_DIR}/etc/NewPlugin.yaml")
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/etc/NewPlugin.yaml" DESTINATION "${MC_PLUGINS_RUNTIME_INSTALL_PREFIX}/etc")
+configure_file(etc/PassivityTorqueFeedback.in.yaml "${CMAKE_CURRENT_BINARY_DIR}/etc/PassivityTorqueFeedback.yaml")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/etc/PassivityTorqueFeedback.yaml" DESTINATION "${MC_PLUGINS_RUNTIME_INSTALL_PREFIX}/etc")
 
 set(plugin_SRC
-  src/NewPlugin.cpp
+  src/PassivityTorqueFeedback.cpp
   )
 
 set(plugin_HDR
-  src/NewPlugin.h
+  src/PassivityTorqueFeedback.h
 )
 
 # The add_plugin macro is provided by mc_rtc
-add_plugin(NewPlugin "${plugin_SRC}" "${plugin_HDR}")
+add_plugin(PassivityTorqueFeedback "${plugin_SRC}" "${plugin_HDR}")
 
 if(BUILD_TESTING)
   add_subdirectory(tests)
