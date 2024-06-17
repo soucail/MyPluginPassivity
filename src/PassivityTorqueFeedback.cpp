@@ -2,6 +2,9 @@
 
 #include <mc_control/GlobalPluginMacros.h>
 #include <mc_tvm/Robot.h>
+#include <RBDyn/MultiBodyConfig.h>
+#include <jrl-qp/experimental/BoxAndSingleConstraintSolver.h>
+#include <tvm/defs.h>
 
 namespace mc_plugin
 {
@@ -15,6 +18,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
   auto & robot = ctl.robot(ctl.robots()[0].name());
   auto nrDof = robot.mb().nrDof();
+  solver_ = std::make_shared<jrl::qp::experimental::BoxAndSingleConstraintSolver>(robot.mb().nrJoints());
 
   // ========== Check for Virtual Torque Sensor to hold feedback term value ========== //
   if (!robot.hasDevice<mc_rbdyn::VirtualTorqueSensor>("virtualTorqueSensor"))
@@ -22,7 +26,6 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
     mc_rtc::log::error_and_throw<std::runtime_error>("[PassivityTorqueFeedback][Init] No \"VirtualTorqueSensor\" with the name \"virtualTorqueSensor\" found in the robot module, please add one to the robot's RobotModule.");
   }
   virtual_torque_sensor_ = &robot.device<mc_rbdyn::VirtualTorqueSensor>("virtualTorqueSensor");
-
   dt_ = ctl.timestep();
   coriolis_ = new rbd::Coriolis(robot.mb());
   fd_ = new rbd::ForwardDynamics(robot.mb());
@@ -30,25 +33,28 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   // ====================  Load  config  ==================== //
   verbose_ = config("verbose", false);
   auto integrationTypeStr = config("integration_type",(std::string)"Simple");
-  auto velGainTypeStr = config("velocity_gain_type",(std::string)"Diagonal");
-  lambda_ = config("lambda", 1.0);
+  lambda_massmatrix_ = config("lambda_massmatrix", 0.5);
+  lambda_id_ = config("lamda_id", 0.1);
   fast_filter_weight_ = config("fast_filter_weight",0.9);
-  phi_slow_ = config("phi_slow",0.1);
-  phi_fast_ = config("phi_fast",100.0);
+  phi_slow_ = config("phi_slow",0.01);
+  phi_fast_ = config("phi_fast",10.0);
   integral_boundl_ = config("integral_bound")("low",-20.0);
   integral_boundu_ = config("integral_bound")("up",-20.0);
+  perc_ = config("perc",0.1);
+  maxAngAcc_ = Eigen::Vector3d(5,5,5) * (M_PI / 180.0);
+  maxLinAcc_ = Eigen::Vector3d(0.5,0.5,10);
+  // maxAngAcc_= config("maxAngAcc");
+  // maxLinAcc_= config("maxLinAcc");
+  config("maxAngAcc", maxAngAcc_);
+  config("maxLinAcc", maxLinAcc_);
+
+
   // ==================== Config loaded ==================== //
 
   // Integral term type
   if (integrationTypeStr.compare("Simple") == 0) integralType_ = IntegralTermType::Simple;
   else if (integrationTypeStr.compare("Filtered") == 0) integralType_ = IntegralTermType::Filtered;
   else mc_rtc::log::error_and_throw("[PassivityTorqueFeedback][init] Integration type loaded from config does not match any implemented type.\nPlease use one of the following type : {Simple, Filtered}");
-
-  // Velocity gain type
-  if (velGainTypeStr.compare("Diagonal") == 0) velGainType_ = VelocityGainType::Diagonal;
-  else if (velGainTypeStr.compare("MassDiagonal") == 0) velGainType_ = VelocityGainType::MassDiagonal;
-  else if (velGainTypeStr.compare("MassMatrix") == 0) velGainType_ = VelocityGainType::MassMatrix;
-  else mc_rtc::log::error_and_throw("[PassivityTorqueFeedback][init] Velocity gain type loaded from config does not match any implemented type.\nPlease use one of the following type : {Diagonal, MassDiagonal, MassMatrix}");
 
   // Initializing all variables
   exp_phi_slow_ = exp(-dt_*phi_slow_);
@@ -62,6 +68,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   slow_filtered_s_ = Eigen::VectorXd::Zero(nrDof);
   fast_filtered_s_ = Eigen::VectorXd::Zero(nrDof);
   tau_ = Eigen::VectorXd::Zero(nrDof);
+  tau_ref_= Eigen::VectorXd::Zero(nrDof);
 
   addGUI(controller);
   addLOG(controller);
@@ -81,15 +88,15 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
 {
 
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  auto & robot = ctl.robot("kinova");
-  auto & realRobot = ctl.realRobot("kinova");
+  auto & robot = ctl.robot("hrp5_p");
+  // auto & robot = ctl.robot("kinova");
+  // auto & realRobot = ctl.realRobot("kinova");
 
   if (robot.encoderVelocities().empty())
   {
     return;
   }
-
-
+  
   Eigen::VectorXd alpha_d(robot.mb().nrDof());
   Eigen::VectorXd alpha(robot.mb().nrDof());
 
@@ -99,11 +106,11 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
 
   alpha_r_ +=  alpha_d*dt_;
 
-  if (velGainType_ == VelocityGainType::Diagonal) K_ = lambda_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof());
-  else if (velGainType_ == VelocityGainType::MassDiagonal) K_ = lambda_* fd_->H().diagonal();
-  else if (velGainType_ == VelocityGainType::MassMatrix) K_ = lambda_* fd_->H();
+  K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof());
 
-  L_ = coriolis_->coriolis(robot.mb(), robot.mbc()) + K_;
+  C_ = coriolis_->coriolis(robot.mb(), robot.mbc());
+
+  L_ = C_ + K_;
 
   if (integralType_ == IntegralTermType::Simple)
   {
@@ -126,11 +133,14 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
   {
     tau_ = L_*s_;
     tau_ = tau_.cwiseMax(integral_boundl_).cwiseMin(integral_boundu_);
+    tau_ -= C_*s_ ;
+
   }
   else
   {
     tau_.setZero();
   }
+
 
   if((count_%1000) == 0 && verbose_)
   {
@@ -141,13 +151,70 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
     mc_rtc::log::info("Tau clamped: {}", tau_.transpose());
   }
 
+  Eigen::VectorXd torqueL_(robot.mb().nrDof());
+  Eigen::VectorXd torqueU_(robot.mb().nrDof());
+
+  rbd::paramToVector(robot.tl(),torqueL_);
+  rbd::paramToVector(robot.tu(),torqueU_);
+
+  Eigen::VectorXd torqueL_prime(robot.mb().nrDof());
+  Eigen::VectorXd torqueU_prime(robot.mb().nrDof());
+
+  torqueL_prime= torqueL_ * perc_ ;
+  torqueU_prime= torqueU_ * perc_ ;
+
+  for (int i = 0; i < robot.mb().nrJoints(); i++)
+  {
+    if (robot.mb().joint(i).type() == rbd::Joint::Free)
+    {
+      int j = robot.mb().jointPosInDof(i);
+      Eigen::Vector6d acc;
+      acc << maxAngAcc_, maxLinAcc_;
+      torqueU_prime.segment<6>(j) = fd_->H().block<6, 6>(j, j).diagonal().array() * acc.array();
+      torqueL_prime.segment<6>(j) = -torqueU_prime.segment<6>(j);
+      break;
+    }
+  }
+
+  /// get the multiplier of the bound violation
+  double epsilonU = (tau_.array() / torqueU_prime.array()).maxCoeff();
+  double epsilonL = (tau_.array() / torqueL_prime.array()).maxCoeff();
+  double epsilon  = std::max(std::max(epsilonU, epsilonL),1.);
+
+  if (epsilon >1)
+  {
+    double dotprod = tau_.dot(s_)/epsilon;
+    // std::cout << "Martin QP Started"<<std::endl;
+    
+    if (solver_->solve(tau_,s_,dotprod,torqueL_prime,torqueU_prime)==jrl::qp::TerminationStatus::SUCCESS)
+    {
+      // std::cout << "Martin Succeeded"<<(solver_->solution()-tau_).norm() <<" "<< (tau_/epsilon-tau_).norm()<<std::endl;
+      tau_ = solver_->solution();
+    } 
+    else
+    {
+      std::cout << "Mehdi QP FAILED"<<std::endl;
+      std::cerr << "Mehdi QP FAILED"<<std::endl;
+      
+      tau_ /=epsilon;
+    }
+  }
+  if(is_active_) 
+  {
+  tau_ += C_ * s_ ; 
+  }
+  // LLT_.compute(fd_->H());
+  // LLT_.matrixL().solveInPlace(gammaD_);
+  // LLT_.matrixL().transpose().solveInPlace(gammaD_)
+  rbd::paramToVector(robot.jointTorque(), tau_ref_);
+  tau_ref_ -= tau_;
   virtual_torque_sensor_->torques(tau_);
 
   count_++;
-  // mc_rtc::log::info("PassivityTorqueFeedback::before");
 }
 
-void PassivityTorqueFeedback::after(mc_control::MCGlobalController & controller)
+
+void PassivityTorqueFeedback::after(mc_control::MCGlobalController &)
 {
   mc_rtc::log::info("PassivityTorqueFeedback::after");
 } 
@@ -160,22 +227,39 @@ void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::Checkbox("Is active", this->is_active_)
   );
-
+  gui->addElement({"Plugins","Integral term feedback","Configure"},
+    mc_rtc::gui::NumberInput("Anti-Windup percentage", this->perc_)
+  );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::ComboInput("Integral term type", {"Simple","Filtered"},
       [this]() { return getIntegralTermType(); },
       [this] (const std::string & t) { setIntegralTermType(t); }
     )
   );
+
   gui->addElement({"Plugins","Integral term feedback","Configure"},
-    mc_rtc::gui::ComboInput("Velocity gain type", {"Diagonal","MassDiagonal","MassMatrix"},
-      [this]() { return getVelocityGainType(); },
-      [this] (const std::string & t) { setVelocityGainType(t); }
-    )
+    mc_rtc::gui::NumberInput("Gain Mass matrix",
+      [this]() { return this-> lambda_massmatrix_; },
+      [this](double lambda_massmatrix_new) {
+        Eigen::MatrixXd L_new = C_ + lambda_massmatrix_new * fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(s_.size(),s_.size());
+        slow_filtered_s_ = L_new.inverse() * L_ * slow_filtered_s_;
+        fast_filtered_s_ = L_new.inverse() * L_ * fast_filtered_s_;
+        lambda_massmatrix_ = lambda_massmatrix_new;
+      })
   );
+
+
   gui->addElement({"Plugins","Integral term feedback","Configure"},
-    mc_rtc::gui::NumberInput("Gain", this->lambda_)
+    mc_rtc::gui::NumberInput("Gain Identity matrix",
+      [this]() { return this-> lambda_id_; },
+      [this](double lambda_id_new) {
+        Eigen::MatrixXd L_new = C_ + lambda_massmatrix_* fd_->H() + lambda_id_new*Eigen::MatrixXd::Identity(s_.size(),s_.size());
+        slow_filtered_s_ = L_new.inverse() * L_ * slow_filtered_s_;
+        fast_filtered_s_ = L_new.inverse() * L_ * fast_filtered_s_;
+        lambda_id_ = lambda_id_new;
+      })
   );
+  
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::NumberInput("Slow filter phi",
       [this]() { return phi_slow_; },
@@ -254,6 +338,13 @@ void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller
     )
   );
 
+  gui->addElement({"Plugins","Integral term feedback","Logs"},
+    mc_rtc::gui::ArrayLabel("Torque reference",
+      ctl.controller().robot().refJointOrder(),
+      [this]() { return tau_ref_;}
+    )
+  );
+
   // Plots
   gui->addElement({"Plugins","Integral term feedback","Plots"},
     mc_rtc::gui::ElementsStacking::Horizontal,
@@ -271,7 +362,7 @@ void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller
         );
       }
     ),
-    mc_rtc::gui::Button("Remove integral term plot", [this,gui]() { gui->removePlot("Integral term feedback"); })
+    mc_rtc::gui::Button("Remove integral term plot", [gui]() { gui->removePlot("Integral term feedback"); })
   );
 }
 
@@ -280,11 +371,11 @@ void PassivityTorqueFeedback::addLOG(mc_control::MCGlobalController & controller
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_active", [&, this]() { return this->is_active_; });
 
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_type", [&, this]() { return static_cast<int>(this->integralType_); });
-  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_gain_type", [&, this]() { return static_cast<int>(this->velGainType_); });
 
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_bounds_lower", [&, this]() { return this->integral_boundl_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_bounds_up", [&, this]() { return this->integral_boundu_; });
-  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_gain_scalar", [&, this]() { return this->lambda_; });
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_gain_mass_matrix", [&, this]() { return this->lambda_massmatrix_; });
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_gain_identity", [&, this]() { return this->lambda_id_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_slow_phi", [&, this]() { return this->phi_slow_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_fast_phi", [&, this]() { return this->phi_fast_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_slow_exp_phi", [&, this]() { return this->exp_phi_slow_; });
@@ -298,7 +389,9 @@ void PassivityTorqueFeedback::addLOG(mc_control::MCGlobalController & controller
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_previous_s", [&, this]() { return this->prev_s_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_slow_s", [&, this]() { return this->slow_filtered_s_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_fast_s", [&, this]() { return this->fast_filtered_s_; });
-  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque", [&, this]() { return this->tau_; });
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_passivity", [&, this]() { return this->tau_; });
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_reference", [&, this]() { return this->tau_ref_; });
+
 }
 
 void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & controller)
@@ -306,11 +399,11 @@ void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & control
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_active");
 
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_type");
-  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_gain_type");
 
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_bounds_lower");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_bounds_up");
-  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_gain_scalar");
+  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_gain_mass_matrix");
+  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_gain_identity");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_slow_phi");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_fast_phi");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_slow_exp_phi");
@@ -324,7 +417,9 @@ void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & control
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_previous_s");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_slow_s");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_fast_s");
-  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque");
+  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_passivity");
+  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_reference");
+
 }
 
 std::string PassivityTorqueFeedback::getIntegralTermType(void)
@@ -340,32 +435,10 @@ std::string PassivityTorqueFeedback::getIntegralTermType(void)
   }
 }
 
-std::string PassivityTorqueFeedback::getVelocityGainType(void)
-{
-  switch(integralType_)
-  {
-    case VelocityGainType::Diagonal:
-      return "Diagonal";
-    case VelocityGainType::MassDiagonal:
-      return "MassDiagonal";
-    case VelocityGainType::MassMatrix:
-      return "MassMatrix";
-    default:
-      return "";
-  }
-}
-
 void PassivityTorqueFeedback::setIntegralTermType(std::string type)
 {
   if (type.compare("Simple") == 0) integralType_ = IntegralTermType::Simple;
   else if (type.compare("Filtered") == 0) integralType_ = IntegralTermType::Filtered;
-}
-
-void PassivityTorqueFeedback::setVelocityGainType(std::string type)
-{
-  if (type.compare("Diagonal") == 0) velGainType_ = VelocityGainType::Diagonal;
-  else if (type.compare("MassDiagonal") == 0) velGainType_ = VelocityGainType::MassDiagonal;
-  else if (type.compare("MassMatrix") == 0) velGainType_ = VelocityGainType::MassMatrix;
 }
 
 mc_control::GlobalPlugin::GlobalPluginConfiguration PassivityTorqueFeedback::configuration()

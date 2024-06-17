@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5)
 
 project(PassivityTorqueFeedback LANGUAGES CXX VERSION 1.0.0)
 
@@ -22,8 +22,13 @@ set(plugin_HDR
   src/PassivityTorqueFeedback.h
 )
 
+
 # The add_plugin macro is provided by mc_rtc
 add_plugin(PassivityTorqueFeedback "${plugin_SRC}" "${plugin_HDR}")
+
+find_package(jrl-qp REQUIRED)
+target_link_libraries(PassivityTorqueFeedback PUBLIC jrl-qp::jrl-qp)
+
 
 if(BUILD_TESTING)
   add_subdirectory(tests)
