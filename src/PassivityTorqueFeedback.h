@@ -36,6 +36,7 @@ private:
 
   std::string getIntegralTermType(void);
   void setIntegralTermType(std::string type);
+  void torque_continuity(double lambda_massmatrix,double lambda_id,double lambda_diag_massmatrix);
 
 public:
   enum IntegralTermType
@@ -53,6 +54,10 @@ private:
   bool verbose_;
   /** Count to track time */
   int count_;
+  /** Bool for taking the coriolis effects in consideration or not*/
+  bool coriolis_indicator_;
+  /** Corresponding value of the booleen for taking the coriolis effects in consideration or not*/
+  int coriolis_indicator_value_;
   /** Control timestep used for integration*/
   double dt_;
   /** Coriolis object for computation of coriolis matrix from robot configuration */
@@ -63,14 +68,12 @@ private:
   mc_rbdyn::VirtualTorqueSensor * virtual_torque_sensor_;
   /** Type of integral used */
   IntegralTermType integralType_;
-  /** Integral term lower limit*/
-  double integral_boundl_;
-  /** Integral term upper limit*/
-  double integral_boundu_;
-  /** Positive velocity gain value */
+  /** Positive gain value for mass matrix*/
   double lambda_massmatrix_;
-  /** Positive velocity gain value */
+  /** Positive gain value for identity matrix */
   double lambda_id_;
+  /** Positive gain value for the massmatrix diagonale */
+  double lambda_diag_massmatrix_; 
   /** Slow filter time constant */
   double phi_slow_;
   /** Fast filter time constant */
