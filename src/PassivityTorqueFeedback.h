@@ -52,12 +52,14 @@ private:
   bool is_active_;
   /** Disable unecessary console outputs */
   bool verbose_;
+  /** Track if the value of perc_ is changing */
+  bool is_changing_;
   /** Count to track time */
   int count_;
   /** Bool for taking the coriolis effects in consideration or not*/
   bool coriolis_indicator_;
   /** Corresponding value of the booleen for taking the coriolis effects in consideration or not*/
-  int coriolis_indicator_value_;
+  double coriolis_indicator_value_;
   /** Control timestep used for integration*/
   double dt_;
   /** Coriolis object for computation of coriolis matrix from robot configuration */
@@ -86,12 +88,14 @@ private:
   double fast_filter_weight_;
   /** Percentage for the torque limit in the antiwindup regarding the physical limits of the robot */
   double perc_;
+  /** Percentage for the torque limit in the antiwindup regarding the physical limits of the robot, used for the exponential growing due to change in the GUI */
+  double perc_target_;
   /** Configuration velocity reference from the integral of configuration acceleration reference*/
   Eigen::VectorXd alpha_r_;
   /** Velocity gain matrix */
   Eigen::MatrixXd K_;
-  /** Integral gain matrix */
-  Eigen::MatrixXd L_;
+  /** Velocity gain matrix diagonal*/
+  Eigen::MatrixXd D_;
   /** Coriolis matrix */
   Eigen::MatrixXd C_;
   /** Vector of velocity error using integration of acceleration reference for velocity reference */
