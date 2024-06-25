@@ -38,7 +38,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   auto integrationTypeStr = config("integration_type",(std::string)"Simple");
   lambda_massmatrix_ = config("lambda_massmatrix", 0.5);
   lambda_diag_massmatrix_= config("lambda_diag_massmatrix", 0.0);
-  lambda_id_ = config("lamda_id", 0.1);
+  lambda_id_ = config("lambda_id", 0.1);
   fast_filter_weight_ = config("fast_filter_weight",0.9);
   phi_slow_ = config("phi_slow",0.01);
   phi_fast_ = config("phi_fast",10.0);
