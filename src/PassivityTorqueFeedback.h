@@ -38,13 +38,6 @@ private:
   void setIntegralTermType(std::string type);
   void torque_continuity(double lambda_massmatrix,double lambda_id,double lambda_diag_massmatrix);
 
-public:
-  enum IntegralTermType
-  {
-    Simple,
-    Filtered
-  };
-
 private:
   // /** instance of integral term anti windup */
   // torque_control::IntegralTermAntiWindup integralTermAntiWindup_; // est-ce que je mets une etoile ?
@@ -54,6 +47,8 @@ private:
   bool verbose_;
   /** Track if the value of perc_ is changing */
   bool is_changing_;
+  /** simple or filtered integration */
+  bool filtered_activated_;
   /** Count to track time */
   int count_;
   /** Bool for taking the coriolis effects in consideration or not*/
@@ -68,8 +63,6 @@ private:
   rbd::ForwardDynamics * fd_;
   /** Virtual torque sensor used to hold value of feedback term */
   mc_rbdyn::VirtualTorqueSensor * virtual_torque_sensor_;
-  /** Type of integral used */
-  IntegralTermType integralType_;
   /** Positive gain value for mass matrix*/
   double lambda_massmatrix_;
   /** Positive gain value for identity matrix */

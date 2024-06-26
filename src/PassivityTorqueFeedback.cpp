@@ -45,6 +45,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   perc_ = config("perc",10);
   perc_target_ = config("perc",10);
   is_changing_ = false;
+  filtered_activated_ = true;
   coriolis_indicator_ = config("coriolis_indicator",true);
   coriolis_indicator_value_ = 1;
   maxAngAcc_ = Eigen::Vector3d(5,5,5) * (M_PI / 180.0);
@@ -54,11 +55,6 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
 
 
   // ==================== Config loaded ==================== //
-
-  // Integral term type
-  if (integrationTypeStr.compare("Simple") == 0) integralType_ = IntegralTermType::Simple;
-  else if (integrationTypeStr.compare("Filtered") == 0) integralType_ = IntegralTermType::Filtered;
-  else mc_rtc::log::error_and_throw("[PassivityTorqueFeedback][init] Integration type loaded from config does not match any implemented type.\nPlease use one of the following type : {Simple, Filtered}");
 
   // Initializing all variables
   exp_phi_slow_ = exp(-dt_*phi_slow_);
@@ -90,16 +86,15 @@ void PassivityTorqueFeedback::reset(mc_control::MCGlobalController & controller)
 
 void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller)
 {
-  // Transform the booleen into a bit
-  if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
-  else {coriolis_indicator_value_=0.0;}
-
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
   // auto & robot = ctl.robot("hrp5_p");
   auto & robot = ctl.robot("kinova");
   // auto & realRobot = ctl.realRobot("kinova");
-  
-  C_ = coriolis_indicator_value_*coriolis_->coriolis(robot.mb(), robot.mbc());
+
+  if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
+  else {coriolis_indicator_value_=0.0;}
+ 
+  C_ = coriolis_indicator_value_*(coriolis_->coriolis(robot.mb(), robot.mbc()));
 
   if (robot.encoderVelocities().empty())
   {
@@ -115,25 +110,26 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
 
   alpha_r_ +=  alpha_d*dt_;
 
-  // Calculation of the error
-
-  if (integralType_ == IntegralTermType::Simple)
-  {
-    s_ = alpha_r_ - alpha;
-  }
-  else if (integralType_ == IntegralTermType::Filtered)
-  {
-    new_s_ = alpha_r_ - alpha;
-    slow_filtered_s_ = exp_phi_slow_*slow_filtered_s_ + new_s_ - prev_s_;
-    fast_filtered_s_ = exp_phi_fast_*fast_filtered_s_ + new_s_ - prev_s_;
-    prev_s_ = new_s_;
-    s_ = fast_filter_weight_ * fast_filtered_s_ + (1 - fast_filter_weight_) * slow_filtered_s_;
-  }
-
   // Passivity Torque Feedback and QP-based Anti-Windup if the Plugin is activated
 
   if(is_active_)
   {
+    alpha_r_ +=  alpha_d*dt_;
+
+    // Calculation of the error
+    if (filtered_activated_) 
+    {
+      new_s_ = alpha_r_ - alpha;
+      slow_filtered_s_ = exp_phi_slow_*slow_filtered_s_ + new_s_ - prev_s_;
+      fast_filtered_s_ = exp_phi_fast_*fast_filtered_s_ + new_s_ - prev_s_;
+      prev_s_ = new_s_;
+      s_ = fast_filter_weight_ * fast_filtered_s_ + (1 - fast_filter_weight_) * slow_filtered_s_;
+    }
+    else
+    {
+      s_ = alpha_r_ - alpha;
+    }
+
     D_.diagonal() = fd_->H().diagonal(); 
     K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof()) +lambda_diag_massmatrix_*D_;
     tau_ = K_*s_;
@@ -198,7 +194,7 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
         tau_ /=epsilon;
       }
     }
-    tau_ += C_ * s_ ; 
+    tau_ += coriolis_indicator_value_*C_ * s_ ; 
   }
 
   else
@@ -230,18 +226,15 @@ void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller
     mc_rtc::gui::Checkbox("Coriolis effect", this->coriolis_indicator_)
   );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
+    mc_rtc::gui::Checkbox("Filtered Integral if activated, simple otherwise", this->filtered_activated_)
+  );
+  gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::NumberInput("Anti-Windup percentage",
             [this]() { return this->perc_; },
             [this](double perc_new) {
                 this->perc_target_ = perc_new;
                 this->is_changing_ = true;
             })
-  );
-  gui->addElement({"Plugins","Integral term feedback","Configure"},
-    mc_rtc::gui::ComboInput("Integral term type", {"Simple","Filtered"},
-      [this]() { return getIntegralTermType(); },
-      [this] (const std::string & t) { setIntegralTermType(t); }
-    )
   );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::NumberInput("Gain Mass matrix",
@@ -372,9 +365,8 @@ void PassivityTorqueFeedback::addLOG(mc_control::MCGlobalController & controller
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_active", [&, this]() { return this->is_active_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_changing", [&, this]() { return this->is_changing_; });
 
-  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_type", [&, this]() { return static_cast<int>(this->integralType_); });
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_type", [&, this]() { return static_cast<int>(this->filtered_activated_); });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_percentage_of_bounds", [&, this]() { return this->perc_; });
-
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_coriolis_indicator_value", [&, this]() { return this->coriolis_indicator_value_; });
 
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_gain_mass_matrix", [&, this]() { return this->lambda_massmatrix_; });
@@ -426,24 +418,6 @@ void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & control
 
 }
 
-std::string PassivityTorqueFeedback::getIntegralTermType(void)
-{
-  switch(integralType_)
-  {
-    case IntegralTermType::Simple:
-      return "Simple";
-    case IntegralTermType::Filtered:
-      return "Filtered";
-    default:
-      return "";
-  }
-}
-
-void PassivityTorqueFeedback::setIntegralTermType(std::string type)
-{
-  if (type.compare("Simple") == 0) integralType_ = IntegralTermType::Simple;
-  else if (type.compare("Filtered") == 0) integralType_ = IntegralTermType::Filtered;
-}
 
 void PassivityTorqueFeedback::torque_continuity(double lambda_massmatrix,double lambda_id,double lambda_diag_massmatrix)
 {
@@ -451,13 +425,15 @@ void PassivityTorqueFeedback::torque_continuity(double lambda_massmatrix,double 
   Eigen::MatrixXd L_new = coriolis_indicator_value_*C_ + lambda_massmatrix * fd_->H() + lambda_id*Eigen::MatrixXd::Identity(s_.size(),s_.size())+lambda_diag_massmatrix * D_;
   Eigen::MatrixXd update_matrix = L_new.inverse()*(coriolis_indicator_value_*C_+K_);
   // Disjonction for filtered or simple integration 
-  if (is_active_) {
-  slow_filtered_s_ = update_matrix* slow_filtered_s_;
-  fast_filtered_s_ = update_matrix* fast_filtered_s_;
-  s_ = fast_filter_weight_ * fast_filtered_s_ + (1 - fast_filter_weight_) * slow_filtered_s_;
-  }
-  else {
-  s_ = update_matrix*s_;
+  if (is_active_){
+    if (filtered_activated_) {
+    slow_filtered_s_ = update_matrix* slow_filtered_s_;
+    fast_filtered_s_ = update_matrix* fast_filtered_s_;
+    s_ = fast_filter_weight_ * fast_filtered_s_ + (1 - fast_filter_weight_) * slow_filtered_s_;
+    }
+    else {
+    s_ = update_matrix*s_;
+    }
   }
 }
 
