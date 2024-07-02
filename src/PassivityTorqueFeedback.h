@@ -37,6 +37,7 @@ private:
   std::string getIntegralTermType(void);
   void setIntegralTermType(std::string type);
   void torque_continuity(double lambda_massmatrix,double lambda_id,double lambda_diag_massmatrix);
+  void torque_activation(mc_control::MCGlobalController & controller);
 
 private:
   // /** instance of integral term anti windup */

@@ -46,6 +46,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   perc_target_ = config("perc",10);
   is_changing_ = false;
   filtered_activated_ = true;
+  is_active_ = false; 
   coriolis_indicator_ = config("coriolis_indicator",true);
   coriolis_indicator_value_ = 1;
   maxAngAcc_ = Eigen::Vector3d(5,5,5) * (M_PI / 180.0);
@@ -94,8 +95,6 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
   if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
   else {coriolis_indicator_value_=0.0;}
  
-  C_ = coriolis_indicator_value_*(coriolis_->coriolis(robot.mb(), robot.mbc()));
-
   if (robot.encoderVelocities().empty())
   {
     return;
@@ -108,13 +107,12 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
 
   fd_->forwardDynamics(robot.mb(),robot.mbc());
 
-  alpha_r_ +=  alpha_d*dt_;
-
   // Passivity Torque Feedback and QP-based Anti-Windup if the Plugin is activated
 
   if(is_active_)
   {
     alpha_r_ +=  alpha_d*dt_;
+    C_ = coriolis_indicator_value_*(coriolis_->coriolis(robot.mb(), robot.mbc()));
 
     // Calculation of the error
     if (filtered_activated_) 
@@ -216,12 +214,15 @@ void PassivityTorqueFeedback::after(mc_control::MCGlobalController &)
 
 void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller)
 {
-  auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  auto gui = ctl.controller().gui();
+    auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
+    auto gui = ctl.controller().gui();
 
-  gui->addElement({"Plugins","Integral term feedback","Configure"},
-    mc_rtc::gui::Checkbox("Is active", this->is_active_)
-  );
+    gui->addElement({"Plugins", "Integral term feedback", "Configure"},
+        mc_rtc::gui::Button(
+            "Activate Plugin",
+            [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
+        )
+    );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::Checkbox("Coriolis effect", this->coriolis_indicator_)
   );
@@ -279,7 +280,7 @@ void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller
     )
   );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
-    mc_rtc::gui::NumberInput("Fast filter weight", this->fast_filter_weight_)
+    mc_rtc::gui::NumberInput("Fast filter ratio", this->fast_filter_weight_)
   );
 
   // Logs
@@ -376,7 +377,7 @@ void PassivityTorqueFeedback::addLOG(mc_control::MCGlobalController & controller
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_fast_phi", [&, this]() { return this->phi_fast_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_slow_exp_phi", [&, this]() { return this->exp_phi_slow_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_fast_exp_phi", [&, this]() { return this->exp_phi_fast_; });
-  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_weight", [&, this]() { return this->fast_filter_weight_; });
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_ratio", [&, this]() { return this->fast_filter_weight_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_integral_of_reference_acceleration", [&, this]() { return this->alpha_r_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_K", [&, this]() { return static_cast<Eigen::VectorXd>(this->K_.diagonal()); });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_s", [&, this]() { return this->s_; });
@@ -405,7 +406,7 @@ void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & control
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_fast_phi");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_slow_exp_phi");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_fast_exp_phi");
-  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_weight");
+  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_ratio");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_integral_of_reference_acceleration");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_K");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_s");
@@ -435,6 +436,24 @@ void PassivityTorqueFeedback::torque_continuity(double lambda_massmatrix,double 
     s_ = update_matrix*s_;
     }
   }
+}
+
+
+void PassivityTorqueFeedback::torque_activation(mc_control::MCGlobalController & controller)
+{
+  auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
+  auto & robot = ctl.robot("kinova");
+
+  Eigen::VectorXd alpha_d(robot.mb().nrDof());
+  Eigen::VectorXd alpha(robot.mb().nrDof());
+  Eigen::VectorXd alpha_r_(robot.mb().nrDof());
+
+  rbd::paramToVector(robot.alphaD(),alpha_d);
+  rbd::paramToVector(robot.alpha(),alpha);
+
+  alpha_r_ = alpha_d*dt_ ; 
+
+  slow_filtered_s_= alpha_r_ - alpha;
 }
 
 mc_control::GlobalPlugin::GlobalPluginConfiguration PassivityTorqueFeedback::configuration()
