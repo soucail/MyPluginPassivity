@@ -106,6 +106,8 @@ private:
   Eigen::VectorXd tau_;
   /** Torque reference term */
   Eigen::VectorXd tau_ref_;
+  /** Torque coriolis term */
+  Eigen::VectorXd tau_coriolis_;
   /** Torque lower bound */
   Eigen::VectorXd torqueL_;
   /** Torque lower bound */

@@ -70,6 +70,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   fast_filtered_s_ = Eigen::VectorXd::Zero(nrDof);
   tau_ = Eigen::VectorXd::Zero(nrDof);
   tau_ref_= Eigen::VectorXd::Zero(nrDof);
+  tau_coriolis_ = Eigen::VectorXd::Zero(nrDof);
   
   addGUI(controller);
   addLOG(controller);
@@ -192,7 +193,8 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
         tau_ /=epsilon;
       }
     }
-    tau_ += coriolis_indicator_value_*C_ * s_ ; 
+    tau_coriolis_ = coriolis_indicator_value_*C_ * s_ ;
+    tau_ += tau_coriolis_; 
   }
 
   else
@@ -387,7 +389,7 @@ void PassivityTorqueFeedback::addLOG(mc_control::MCGlobalController & controller
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_filter_fast_s", [&, this]() { return this->fast_filtered_s_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_passivity", [&, this]() { return this->tau_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_reference", [&, this]() { return this->tau_ref_; });
-
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_coriolis", [&, this]() { return this->tau_coriolis_; });
 }
 
 void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & controller)
@@ -416,7 +418,7 @@ void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & control
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_filter_fast_s");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_passivity");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_reference");
-
+  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_coriolis");
 }
 
 
