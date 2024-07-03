@@ -48,7 +48,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   filtered_activated_ = true;
   is_active_ = false; 
   coriolis_indicator_ = config("coriolis_indicator",true);
-  coriolis_indicator_value_ = 1;
+  coriolis_indicator_value_ = 1.0;
   maxAngAcc_ = Eigen::Vector3d(5,5,5) * (M_PI / 180.0);
   maxLinAcc_ = Eigen::Vector3d(0.5,0.5,10);
   config("maxAngAcc", maxAngAcc_);
@@ -63,6 +63,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   alpha_r_ = Eigen::VectorXd::Zero(nrDof);
   K_ = Eigen::MatrixXd::Zero(nrDof,nrDof);
   D_ = Eigen::MatrixXd::Zero(nrDof,nrDof);
+  C_ = Eigen::MatrixXd::Zero(nrDof,nrDof);
   s_ = Eigen::VectorXd::Zero(nrDof);
   new_s_ = Eigen::VectorXd::Zero(nrDof);
   prev_s_ = Eigen::VectorXd::Zero(nrDof);
@@ -89,8 +90,8 @@ void PassivityTorqueFeedback::reset(mc_control::MCGlobalController & controller)
 void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  // auto & robot = ctl.robot("hrp5_p");
-  auto & robot = ctl.robot("kinova");
+  auto & robot = ctl.robot("hrp5_p");
+  // auto & robot = ctl.robot("kinova");
   // auto & realRobot = ctl.realRobot("kinova");
 
   if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
@@ -106,15 +107,14 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
   rbd::paramToVector(robot.alphaD(),alpha_d);
   rbd::paramToVector(robot.alpha(),alpha);
 
-  fd_->forwardDynamics(robot.mb(),robot.mbc());
+  fd_->forwardDynamics(robot.mb(),robot.mbc());  
+  C_ = coriolis_->coriolis(robot.mb(),robot.mbc());
 
   // Passivity Torque Feedback and QP-based Anti-Windup if the Plugin is activated
 
   if(is_active_)
   {
     alpha_r_ +=  alpha_d*dt_;
-    C_ = coriolis_indicator_value_*(coriolis_->coriolis(robot.mb(), robot.mbc()));
-
     // Calculation of the error
     if (filtered_activated_) 
     {
@@ -129,6 +129,7 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
       s_ = alpha_r_ - alpha;
     }
 
+    tau_coriolis_ = coriolis_indicator_value_*C_* s_ ;
     D_.diagonal() = fd_->H().diagonal(); 
     K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof()) +lambda_diag_massmatrix_*D_;
     tau_ = K_*s_;
@@ -193,7 +194,6 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
         tau_ /=epsilon;
       }
     }
-    tau_coriolis_ = coriolis_indicator_value_*C_ * s_ ;
     tau_ += tau_coriolis_; 
   }
 
@@ -444,7 +444,8 @@ void PassivityTorqueFeedback::torque_continuity(double lambda_massmatrix,double 
 void PassivityTorqueFeedback::torque_activation(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  auto & robot = ctl.robot("kinova");
+  // auto & robot = ctl.robot("kinova");
+  auto & robot = ctl.robot("hrp5_p");
 
   Eigen::VectorXd alpha_d(robot.mb().nrDof());
   Eigen::VectorXd alpha(robot.mb().nrDof());
