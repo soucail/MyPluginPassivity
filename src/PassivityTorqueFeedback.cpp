@@ -2,7 +2,14 @@
 
 #include <mc_control/GlobalPluginMacros.h>
 #include <mc_tvm/Robot.h>
+#include <RBDyn/FA.h>
+#include <RBDyn/FK.h>
+#include <RBDyn/FV.h>
+#include <RBDyn/ID.h>
+#include <RBDyn/MultiBody.h>
 #include <RBDyn/MultiBodyConfig.h>
+#include <Eigen/src/Core/IO.h>
+#include <iostream>
 #include <jrl-qp/experimental/BoxAndSingleConstraintSolver.h>
 #include <tvm/defs.h>
 
@@ -18,7 +25,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   mc_rtc::log::info("[PassivityTorqueFeedback][init] Init called with configuration:\n{}", config.dump(true, true));
 
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  auto & robot = ctl.robot(ctl.robots()[0].name());
+  auto & robot = ctl.robot();
   auto nrDof = robot.mb().nrDof();
   solver_ = std::make_shared<jrl::qp::experimental::BoxAndSingleConstraintSolver>(robot.mb().nrJoints());
 
@@ -27,11 +34,11 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   {
     mc_rtc::log::error_and_throw<std::runtime_error>("[PassivityTorqueFeedback][Init] No \"VirtualTorqueSensor\" with the name \"virtualTorqueSensor\" found in the robot module, please add one to the robot's RobotModule.");
   }
-
   virtual_torque_sensor_ = &robot.device<mc_rbdyn::VirtualTorqueSensor>("virtualTorqueSensor");
   dt_ = ctl.timestep();
   coriolis_ = new rbd::Coriolis(robot.mb());
   fd_ = new rbd::ForwardDynamics(robot.mb());
+  id_ = new rbd::InverseDynamics(robot.mb());
 
   // ====================  Load  config  ==================== //
   verbose_ = config("verbose", false);
@@ -48,12 +55,12 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   filtered_activated_ = true;
   is_active_ = false; 
   coriolis_indicator_ = config("coriolis_indicator",true);
-  coriolis_indicator_value_ = 1.0;
+  coriolis_indicator_value_ = 0.0;
+  if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
   maxAngAcc_ = Eigen::Vector3d(5,5,5) * (M_PI / 180.0);
   maxLinAcc_ = Eigen::Vector3d(0.5,0.5,10);
   config("maxAngAcc", maxAngAcc_);
   config("maxLinAcc", maxLinAcc_);
-
 
   // ==================== Config loaded ==================== //
 
@@ -69,6 +76,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   prev_s_ = Eigen::VectorXd::Zero(nrDof);
   slow_filtered_s_ = Eigen::VectorXd::Zero(nrDof);
   fast_filtered_s_ = Eigen::VectorXd::Zero(nrDof);
+  motor_current_ = Eigen::VectorXd::Zero(nrDof);
   tau_ = Eigen::VectorXd::Zero(nrDof);
   tau_ref_= Eigen::VectorXd::Zero(nrDof);
   tau_coriolis_ = Eigen::VectorXd::Zero(nrDof);
@@ -77,6 +85,41 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   addLOG(controller);
 
   count_ = 0;
+
+  format = Eigen::IOFormat(2, 0, " ", "\n", "[", "]", " ", " ");
+
+  ctl.controller().datastore().make_call("PassivityPlugin::activated", [this]() { this->is_active_ = true; }); // entree dans le datastore
+
+  // ====================  First Loop for the continuity of the inizialization ==================== //
+  rbd::forwardKinematics(robot.mb(), robot.mbc());
+  rbd::forwardVelocity(robot.mb(), robot.mbc());
+  rbd::forwardAcceleration(robot.mb(), robot.mbc());
+  fd_->forwardDynamics(robot.mb(),robot.mbc());
+  id_->inverseDynamics(robot.mb(), robot.mbc());
+  
+  C_ = coriolis_->coriolis(robot.mb(),robot.mbc());
+
+  rbd::paramToVector(robot.jointTorque(), tau_ref_);
+  D_.diagonal() = fd_->H().diagonal();
+
+  // Initialization for the torque continuity
+  for (int i = 0; i < motor_current_.size(); ++i) { motor_current_(i) = robot.jointSensors()[i].motorCurrent();} 
+  for (int i = 0; i < 4; ++i) { 
+    if (std::isnan(motor_current_(i))){tau_(i)= 0.0;}
+    else {tau_(i) = motor_current_(i)*100*0.11;}
+  }
+  for (int i = 4; i < 7; ++i) {
+    if (std::isnan(motor_current_(i))){tau_(i)= 0.0;}
+    else {tau_(i) = motor_current_(i)*100*0.076;}
+  }
+  std::cout<< tau_ << std::endl;
+  std::cout<< tau_ref_ << std::endl;
+
+
+  K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof()) +lambda_diag_massmatrix_*D_ + coriolis_indicator_value_*C_;
+  slow_filtered_s_ = K_.inverse()*(tau_ - tau_ref_);
+  // s_ = K_.inverse()*(tau_-tau_ref_);
+  prev_s_= K_.inverse()*(tau_-tau_ref_) ;
 
   mc_rtc::log::success("[PassivityTorqueFeedback][init] Initialization completed");
 }
@@ -90,8 +133,8 @@ void PassivityTorqueFeedback::reset(mc_control::MCGlobalController & controller)
 void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  auto & robot = ctl.robot("hrp5_p");
-  // auto & robot = ctl.robot("kinova");
+  // auto & robot = ctl.robot("hrp5_p");
+  auto & robot = ctl.robot();
   // auto & realRobot = ctl.realRobot("kinova");
 
   if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
@@ -101,16 +144,20 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
   {
     return;
   }
-  
   Eigen::VectorXd alpha_d(robot.mb().nrDof());
   Eigen::VectorXd alpha(robot.mb().nrDof());
   rbd::paramToVector(robot.alphaD(),alpha_d);
   rbd::paramToVector(robot.alpha(),alpha);
 
+  rbd::forwardKinematics(robot.mb(), robot.mbc());
+  rbd::forwardVelocity(robot.mb(), robot.mbc());
   fd_->forwardDynamics(robot.mb(),robot.mbc());  
   C_ = coriolis_->coriolis(robot.mb(),robot.mbc());
 
   // Passivity Torque Feedback and QP-based Anti-Windup if the Plugin is activated
+
+  auto ctrl_mode = ctl.controller().datastore().get<std::string>("ControlMode");
+  if (ctrl_mode.compare("Torque") == 0) {ctl.controller().datastore().call("PassivityPlugin::activated");}
 
   if(is_active_)
   {
@@ -444,8 +491,8 @@ void PassivityTorqueFeedback::torque_continuity(double lambda_massmatrix,double 
 void PassivityTorqueFeedback::torque_activation(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  // auto & robot = ctl.robot("kinova");
-  auto & robot = ctl.robot("hrp5_p");
+  auto & robot = ctl.robot();
+  // auto & robot = ctl.robot("hrp5_p");
 
   Eigen::VectorXd alpha_d(robot.mb().nrDof());
   Eigen::VectorXd alpha(robot.mb().nrDof());

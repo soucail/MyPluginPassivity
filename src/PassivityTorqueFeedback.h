@@ -9,6 +9,11 @@
 #include <mc_rbdyn/VirtualTorqueSensor.h>
 #include <RBDyn/Coriolis.h>
 #include <RBDyn/FD.h>
+#include <RBDyn/FK.h>
+#include <RBDyn/FV.h>
+#include <RBDyn/FA.h>
+#include <RBDyn/ID.h>
+#include <Eigen/src/Core/IO.h>
 #include <jrl-qp/experimental/BoxAndSingleConstraintSolver.h>
 
 
@@ -60,8 +65,10 @@ private:
   double dt_;
   /** Coriolis object for computation of coriolis matrix from robot configuration */
   rbd::Coriolis * coriolis_;
-  /** Coriolis object for computation of coriolis matrix from robot configuration */
+  /** Forward Dynamics */
   rbd::ForwardDynamics * fd_;
+  /** Inverse Dynamics */
+  rbd::InverseDynamics * id_;
   /** Virtual torque sensor used to hold value of feedback term */
   mc_rbdyn::VirtualTorqueSensor * virtual_torque_sensor_;
   /** Positive gain value for mass matrix*/
@@ -102,6 +109,8 @@ private:
   Eigen::VectorXd slow_filtered_s_;
   /** Fast filtered value of vector of velocity error used only for filtered integral type */
   Eigen::VectorXd fast_filtered_s_;
+  /** Current from the motor of each joint */
+  Eigen::VectorXd motor_current_;
   /** Torque feedback term */
   Eigen::VectorXd tau_;
   /** Torque reference term */
@@ -118,6 +127,8 @@ private:
   Eigen::Vector3d maxLinAcc_ ; 
   /** solver for antiwindup */
   std::shared_ptr<jrl::qp::experimental::BoxAndSingleConstraintSolver> solver_;
+
+Eigen::IOFormat format;
 };
 
 }
