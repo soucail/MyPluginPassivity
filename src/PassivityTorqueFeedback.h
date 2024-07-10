@@ -113,10 +113,12 @@ private:
   Eigen::VectorXd motor_current_;
   /** Torque feedback term */
   Eigen::VectorXd tau_;
-  /** Torque reference term */
-  Eigen::VectorXd tau_ref_;
+  /** Torque QP term */
+  Eigen::VectorXd tau_qp_;
   /** Torque coriolis term */
   Eigen::VectorXd tau_coriolis_;
+  /** Torque current motor */
+  Eigen::VectorXd tau_current_;
   /** Torque lower bound */
   Eigen::VectorXd torqueL_;
   /** Torque lower bound */
