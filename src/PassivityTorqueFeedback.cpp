@@ -9,6 +9,7 @@
 #include <RBDyn/MultiBody.h>
 #include <RBDyn/MultiBodyConfig.h>
 #include <Eigen/src/Core/IO.h>
+#include <Eigen/src/Core/Matrix.h>
 #include <iostream>
 #include <jrl-qp/experimental/BoxAndSingleConstraintSolver.h>
 #include <tvm/defs.h>
@@ -39,15 +40,14 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   coriolis_ = new rbd::Coriolis(robot.mb());
   fd_ = new rbd::ForwardDynamics(robot.mb());
   id_ = new rbd::InverseDynamics(robot.mb());
-
+  
   // ====================  Load  config  ==================== //
   verbose_ = config("verbose", false);
-  auto integrationTypeStr = config("integration_type",(std::string)"Simple");
   lambda_massmatrix_ = config("lambda_massmatrix", 0.5);
   lambda_diag_massmatrix_= config("lambda_diag_massmatrix", 0.0);
   lambda_id_ = config("lambda_id", 0.1);
   fast_filter_weight_ = config("fast_filter_weight",0.9);
-  phi_slow_ = config("phi_slow",0.01);
+  phi_slow_ = config("phi_slow",0.3);
   phi_fast_ = config("phi_fast",10.0);
   perc_ = config("perc",10);
   perc_target_ = config("perc",10);
@@ -81,6 +81,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   tau_qp_= Eigen::VectorXd::Zero(nrDof);
   tau_coriolis_ = Eigen::VectorXd::Zero(nrDof);
   tau_current_ = Eigen::VectorXd::Zero(nrDof);
+  tau_sum_ = Eigen::VectorXd::Zero(nrDof);
 
   addGUI(controller);
   addLOG(controller);
@@ -95,8 +96,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
       std::cout<< tau_qp_ << std::endl;
       std::cout<< tau_current_ << std::endl;
     }    
-
-    this->is_active_ = true; }); // entree dans le datastore
+    this->is_active_ = true; });
 
   mc_rtc::log::success("[PassivityTorqueFeedback][init] Initialization completed");
 }
@@ -110,25 +110,24 @@ void PassivityTorqueFeedback::reset(mc_control::MCGlobalController & controller)
 void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  // auto & robot = ctl.robot("hrp5_p");
   auto & robot = ctl.robot();
-  // auto & realRobot = ctl.realRobot("kinova");
-
-  if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
-  else {coriolis_indicator_value_=0.0;}
+  // auto & realRobot = ctl.realRobot();
+  
+  auto coriolis_activation = ctl.controller().datastore().get<std::string>("Coriolis");
+  if (coriolis_activation.compare("Yes") == 0) {coriolis_indicator_ = true;coriolis_indicator_value_=1.0; }
+  else {coriolis_indicator_ = false;coriolis_indicator_value_=0.0; }
  
-  if (robot.encoderVelocities().empty())
-  {
-    return;
-  }
+  if (robot.encoderVelocities().empty()) {return;}
 
-  rbd::paramToVector(robot.jointTorque(), tau_qp_);
+  rbd::paramToVector(robot.mbc().jointTorque, tau_qp_);
   tau_qp_ -= tau_ ; 
 
   Eigen::VectorXd alpha_d(robot.mb().nrDof());
   Eigen::VectorXd alpha(robot.mb().nrDof());
   rbd::paramToVector(robot.alphaD(),alpha_d);
   rbd::paramToVector(robot.alpha(),alpha);
+  
+  alpha_r_ +=  alpha_d*dt_;
 
   rbd::forwardKinematics(robot.mb(), robot.mbc());
   rbd::forwardVelocity(robot.mb(), robot.mbc());
@@ -153,7 +152,6 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
 
   if(is_active_)
   {
-    alpha_r_ +=  alpha_d*dt_;
     // Calculation of the error
     if (filtered_activated_) 
     {
@@ -249,10 +247,10 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
 
     prev_s_=new_s_;
     new_s_= (K_+coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-    tau_ = (K_ + coriolis_indicator_value_*C_)*s_;
+    // tau_ = (K_ + coriolis_indicator_value_*C_)*s_;
   }
 
-
+  tau_sum_= tau_qp_ + tau_coriolis_ + tau_ ;
   count_++;
 }
 
@@ -267,12 +265,12 @@ void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller
     auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
     auto gui = ctl.controller().gui();
 
-    gui->addElement({"Plugins", "Integral term feedback", "Configure"},
-        mc_rtc::gui::Button(
-            "Activate Plugin",
-            [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
-        )
-    );
+    // gui->addElement({"Plugins", "Integral term feedback", "Configure"},
+    //     mc_rtc::gui::Button(
+    //         "Activate Plugin",
+    //         [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
+    //     )
+    // );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::Checkbox("Coriolis effect", this->coriolis_indicator_)
   );
@@ -439,6 +437,7 @@ void PassivityTorqueFeedback::addLOG(mc_control::MCGlobalController & controller
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_qp", [&, this]() { return this->tau_qp_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_coriolis", [&, this]() { return this->tau_coriolis_; });
   controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_current", [&, this]() { return this->tau_current_; });
+  controller.controller().logger().addLogEntry("PassivityTorqueFeedback_torque_sum", [&, this]() { return this->tau_sum_; });
 
 }
 
@@ -470,6 +469,7 @@ void PassivityTorqueFeedback::removeLOG(mc_control::MCGlobalController & control
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_qp");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_coriolis");
   controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_current");
+  controller.controller().logger().removeLogEntry("PassivityTorqueFeedback_torque_sum");
 
 }
 
