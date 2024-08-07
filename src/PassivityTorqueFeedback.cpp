@@ -87,14 +87,13 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
   addLOG(controller);
 
   count_ = 0;
-
   format = Eigen::IOFormat(2, 0, " ", "\n", "[", "]", " ", " ");
 
   ctl.controller().datastore().make_call("PassivityPlugin::activated", [this]() { 
     if ( is_active_ == false) {
       slow_filtered_s_ = (K_+ coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-      std::cout<< tau_qp_ << std::endl;
-      std::cout<< tau_current_ << std::endl;
+      // std::cout<< tau_qp_ << std::endl;
+      // std::cout<< tau_current_ << std::endl;
     }    
     this->is_active_ = true; });
 
@@ -113,6 +112,7 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
   auto & robot = ctl.robot();
   // auto & realRobot = ctl.realRobot();
   
+  // Check if we need to send the torque relate to the Coriolis term or not
   auto coriolis_activation = ctl.controller().datastore().get<std::string>("Coriolis");
   if (coriolis_activation.compare("Yes") == 0) {coriolis_indicator_ = true;coriolis_indicator_value_=1.0; }
   else {coriolis_indicator_ = false;coriolis_indicator_value_=0.0; }
@@ -165,7 +165,7 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
     {
       s_ = alpha_r_ - alpha;
     }
-
+    // calculation of the coriolis and integral torque
     tau_coriolis_ = coriolis_indicator_value_*C_* s_ ;
     D_.diagonal() = fd_->H().diagonal(); 
     K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof()) +lambda_diag_massmatrix_*D_;
@@ -235,7 +235,7 @@ void PassivityTorqueFeedback::before(mc_control::MCGlobalController & controller
 
     virtual_torque_sensor_->torques(tau_);
   }
-
+  // juste in case the passivity feedback is not active, to have the logs without sending the torque to the robot
   else
   {
     D_.diagonal() = fd_->H().diagonal();
@@ -265,12 +265,12 @@ void PassivityTorqueFeedback::addGUI(mc_control::MCGlobalController & controller
     auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
     auto gui = ctl.controller().gui();
 
-    // gui->addElement({"Plugins", "Integral term feedback", "Configure"},
-    //     mc_rtc::gui::Button(
-    //         "Activate Plugin",
-    //         [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
-    //     )
-    // );
+  gui->addElement({"Plugins", "Integral term feedback", "Configure"},
+      mc_rtc::gui::Button(
+          "Activate Plugin",
+          [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
+      )
+  );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::Checkbox("Coriolis effect", this->coriolis_indicator_)
   );
@@ -493,7 +493,7 @@ void PassivityTorqueFeedback::torque_continuity(double lambda_massmatrix,double 
 }
 
 
-// To be adapted with the current motor
+// To be adapted with the current motor but useless if we're just waiting for the normal activation after 7.2 seconds
 
 void PassivityTorqueFeedback::torque_activation(mc_control::MCGlobalController & controller)
 {
