@@ -93,7 +93,7 @@ void PassivityTorqueFeedback::init(mc_control::MCGlobalController & controller, 
 
   ctl.controller().datastore().make_call("PassivityPlugin::activated", [this]() { 
     if ( is_active_ == false)    
-    this->is_active_ = false; });
+    this->is_active_ = true; });
   mc_rtc::log::success("[PassivityTorqueFeedback][init] Initialization completed");
 }
 
