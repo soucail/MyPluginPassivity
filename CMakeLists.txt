@@ -10,6 +10,8 @@ if(NOT TARGET mc_rtc::mc_control)
   find_package(mc_rtc REQUIRED)
 endif()
 
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
 # Configure and install the plugin configuration
 configure_file(etc/PassivityTorqueFeedback.in.yaml "${CMAKE_CURRENT_BINARY_DIR}/etc/PassivityTorqueFeedback.yaml")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/etc/PassivityTorqueFeedback.yaml" DESTINATION "${MC_PLUGINS_RUNTIME_INSTALL_PREFIX}/etc")
@@ -20,6 +22,8 @@ set(plugin_SRC
 
 set(plugin_HDR
   src/PassivityTorqueFeedback.h
+  include/utils/ROSSubscriber.h
+
 )
 
 
@@ -28,6 +32,7 @@ add_plugin(PassivityTorqueFeedback "${plugin_SRC}" "${plugin_HDR}")
 
 find_package(jrl-qp REQUIRED)
 target_link_libraries(PassivityTorqueFeedback PUBLIC jrl-qp::jrl-qp)
+target_link_libraries(PassivityTorqueFeedback PUBLIC mc_rtc::mc_rtc_ros)
 
 
 if(BUILD_TESTING)

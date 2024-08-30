@@ -1,6 +1,6 @@
 integration_type: Filtered
 lambda_massmatrix: 0.5
-labda_diag_massmatrix: 0.0
+lambda_diag_massmatrix: 0.0
 lambda_id: 0.1
 phi_slow: 0.01
 phi_fast: 10.0
@@ -9,3 +9,11 @@ perc: 10
 coriolis_indicator: true
 maxLinAcc : [0.5,0.5,10]
 maxAngAcc : [0.087,0.087,0.087]
+
+
+residual_gain: 30
+reference_frame: FT_sensor_wrench
+use_force_sensor: false
+ros_force_sensor: true
+#ros_topic_sensor: /fast_chatter
+ros_topic_sensor: /bus0/ft_sensor0/ft_sensor_readings/wrench
